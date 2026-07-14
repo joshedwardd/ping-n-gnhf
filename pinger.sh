@@ -40,7 +40,6 @@ case "$cmd" in
       at="$2"; shift 2
       notbefore=$(date -j -f "%Y-%m-%d %H:%M" "$(date +%Y-%m-%d) $at" +%s 2>/dev/null) \
         || { echo "bad time: $at (want HH:MM)" >&2; exit 1; }
-      # already past today -> tomorrow
       [ "$notbefore" -le "$(date +%s)" ] && notbefore=$((notbefore + 86400))
     fi
     [ $# -ge 1 ] || usage
