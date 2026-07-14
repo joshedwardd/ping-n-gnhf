@@ -61,6 +61,7 @@ case "$cmd" in
     ;;
 
   run)
+    cd "$DIR" || exit 1
     echo "[$(ts)] ping claude" >> "$LOG"
     if ! claude -p "ping" >> "$LOG" 2>&1; then
       echo "[$(ts)] claude ping FAILED (auth/subscription?), gnhf blocked, job kept" >> "$LOG"
