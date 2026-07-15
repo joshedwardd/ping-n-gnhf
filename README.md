@@ -63,14 +63,22 @@ First argument = repo path. Second = the prompt/objective. Anything after = extr
 gnhf flags. Every job also gets these defaults:
 `--current-branch --max-iterations 20 --max-tokens 5000000`
 
-Check or cancel:
+Check, watch, or cancel:
 
 ```sh
-./pinger.sh status   # is gnhf running? is a job queued? when is it due?
-./pinger.sh clear    # cancel the queued job
-tail -f pinger.log   # what each ping decided
-tail -f gnhf.log     # gnhf's live output while it works
+./pinger.sh status     # is gnhf running? is a job queued? when is it due?
+./pinger.sh last       # what did the last run change (commits, files, FLAWS.md)
+./pinger.sh stop       # gracefully stop a running gnhf
+./pinger.sh clear      # cancel the queued job
+tmux attach -t gnhf    # watch gnhf's live TUI; detach with ctrl+b d
+tail -f pinger.log     # what each ping decided
 ```
+
+gnhf runs inside a detached tmux session named `gnhf`. Attach from any terminal
+to watch it live; detaching does not stop it. After it finishes, the pane stays
+open with the exit summary until the next run replaces it. If tmux is ever
+unavailable, the pinger falls back to headless background mode (output in
+`gnhf.log`).
 
 There is one job slot. Queueing again overwrites the previous job.
 

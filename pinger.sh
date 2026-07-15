@@ -22,6 +22,10 @@ usage:
       show gnhf state and queued job
   pinger.sh clear
       remove queued job
+  pinger.sh stop
+      gracefully stop a running gnhf (SIGINT, waits up to 60s)
+  pinger.sh last
+      show what the last gnhf run changed (commits since base)
 EOF
   exit 1
 }
@@ -99,9 +103,20 @@ case "$cmd" in
 
     echo "[$(ts)] starting gnhf in $repo: $objective" >> "$LOG"
     cd "$repo" || { echo "[$(ts)] bad repo path: $repo" >> "$LOG"; exit 1; }
-    nohup gnhf "${DEFAULT_FLAGS[@]}" ${flags[@]+"${flags[@]}"} "$objective" >> "$GNHF_LOG" 2>&1 &
-    echo $! > "$PIDFILE"
-    echo "[$(ts)] started gnhf pid $(cat "$PIDFILE")" >> "$LOG"
+    base=$(git rev-parse HEAD 2>/dev/null || echo none)
+    { echo "$repo"; echo "$base"; echo "$objective"; } > "$DIR/last-run"
+    echo "[$(ts)] base commit: $base" >> "$LOG"
+    gnhf_cmd=$(printf '%q ' gnhf "${DEFAULT_FLAGS[@]}" ${flags[@]+"${flags[@]}"} "$objective")
+    if tmux kill-session -t gnhf 2>/dev/null; [ -n "$(command -v tmux)" ] && tmux new-session -d -s gnhf -c "$repo" "$gnhf_cmd" 2>/dev/null; then
+      tmux set-option -w -t gnhf remain-on-exit on 2>/dev/null
+      tmux pipe-pane -t gnhf -o "cat >> $GNHF_LOG" 2>/dev/null
+      tmux display-message -p -t gnhf '#{pane_pid}' > "$PIDFILE"
+      echo "[$(ts)] started gnhf pid $(cat "$PIDFILE") in tmux session 'gnhf'" >> "$LOG"
+    else
+      nohup gnhf "${DEFAULT_FLAGS[@]}" ${flags[@]+"${flags[@]}"} "$objective" >> "$GNHF_LOG" 2>&1 &
+      echo $! > "$PIDFILE"
+      echo "[$(ts)] started gnhf pid $(cat "$PIDFILE") headless (no tmux)" >> "$LOG"
+    fi
     ;;
 
   status)
@@ -126,6 +141,43 @@ case "$cmd" in
   clear)
     rm -f "$JOBFILE"
     echo "queue cleared"
+    ;;
+
+  last)
+    [ -f "$DIR/last-run" ] || { echo "no run recorded yet"; exit 0; }
+    repo=$(sed -n 1p "$DIR/last-run")
+    base=$(sed -n 2p "$DIR/last-run")
+    objective=$(sed -n 3p "$DIR/last-run")
+    echo "repo:      $repo"
+    echo "objective: $objective"
+    echo "base:      $base"
+    echo
+    if [ "$base" = "none" ]; then
+      echo "(base unknown, showing last 10 commits)"
+      git -C "$repo" log --oneline -10
+    else
+      echo "commits made:"
+      git -C "$repo" log --oneline "$base..HEAD"
+      echo
+      echo "files changed:"
+      git -C "$repo" diff --stat "$base..HEAD" | tail -5
+    fi
+    [ -f "$repo/FLAWS.md" ] && { echo; echo "FLAWS.md exists: $repo/FLAWS.md"; }
+    ;;
+
+  stop)
+    if ! gnhf_running; then
+      echo "gnhf not running"
+      exit 0
+    fi
+    pid=$(cat "$PIDFILE")
+    kill -INT "$pid"
+    echo "sent interrupt to gnhf (pid $pid), waiting for graceful exit..."
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+      kill -0 "$pid" 2>/dev/null || { echo "gnhf stopped"; rm -f "$PIDFILE"; exit 0; }
+      sleep 5
+    done
+    echo "still running after 60s; force kill: kill -9 $pid"
     ;;
 
   *)
