@@ -7,7 +7,7 @@ JOBFILE="$DIR/next-job"
 PIDFILE="$DIR/gnhf.pid"
 LOG="$DIR/pinger.log"
 GNHF_LOG="$DIR/gnhf.log"
-DEFAULT_FLAGS=(--current-branch --max-iterations 20 --max-tokens 5000000)
+DEFAULT_FLAGS=(--worktree --max-iterations 20 --max-tokens 5000000)
 
 ts(){ date "+%Y-%m-%d %H:%M:%S"; }
 
@@ -187,11 +187,18 @@ case "$cmd" in
       echo "(base unknown, showing last 10 commits)"
       git -C "$repo" log --oneline -10
     else
-      echo "commits made:"
-      git -C "$repo" log --oneline "$base..HEAD"
-      echo
-      echo "files changed:"
-      git -C "$repo" diff --stat "$base..HEAD" | tail -5
+      if [ -z "$(git -C "$repo" log --oneline "$base..HEAD" 2>/dev/null)" ]; then
+        echo "no commits on current branch (worktree run); newest branches:"
+        git -C "$repo" branch --sort=-committerdate --format='  %(refname:short)  (%(committerdate:relative))' | head -5
+        echo
+        echo "inspect one: git -C $repo log --oneline $base..<branch>"
+      else
+        echo "commits made:"
+        git -C "$repo" log --oneline "$base..HEAD"
+        echo
+        echo "files changed:"
+        git -C "$repo" diff --stat "$base..HEAD" | tail -5
+      fi
     fi
     [ -f "$repo/FLAWS.md" ] && { echo; echo "FLAWS.md exists: $repo/FLAWS.md"; }
     ;;
