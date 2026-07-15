@@ -34,6 +34,31 @@ gnhf_running() {
   [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
 }
 
+next_ping() {
+  h=$(date +%-H); m=$(date +%-M)
+  for slot in 0 5 10 15 20; do
+    if [ "$h" -lt "$slot" ] || { [ "$h" -eq "$slot" ] && [ "$m" -eq 0 ]; }; then
+      printf 'today %02d:00' "$slot"
+      return
+    fi
+  done
+  echo "tomorrow 00:00"
+}
+
+watch_and_notify() {
+  pid="$1" repo="$2" base="$3"
+  while kill -0 "$pid" 2>/dev/null; do sleep 30; done
+  if [ "$base" = "none" ]; then
+    msg="run ended in $(basename "$repo")"
+  else
+    n=$(git -C "$repo" rev-list --count "$base..HEAD" 2>/dev/null || echo "?")
+    msg="$n commit(s) in $(basename "$repo")"
+    [ -f "$repo/FLAWS.md" ] && msg="$msg, FLAWS.md present"
+  fi
+  echo "[$(ts)] gnhf finished: $msg" >> "$LOG"
+  osascript -e "display notification \"$msg\" with title \"gnhf finished\"" 2>/dev/null
+}
+
 cmd="${1:-}"
 case "$cmd" in
   queue)
@@ -66,6 +91,9 @@ case "$cmd" in
 
   run)
     cd "$DIR" || exit 1
+    if [ -f "$LOG" ] && [ "$(wc -l < "$LOG")" -gt 1000 ]; then
+      tail -500 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+    fi
     echo "[$(ts)] ping claude" >> "$LOG"
     if ! claude -p "ping" >> "$LOG" 2>&1; then
       echo "[$(ts)] claude ping FAILED (auth/subscription?), gnhf blocked, job kept" >> "$LOG"
@@ -106,6 +134,7 @@ case "$cmd" in
     base=$(git rev-parse HEAD 2>/dev/null || echo none)
     { echo "$repo"; echo "$base"; echo "$objective"; } > "$DIR/last-run"
     echo "[$(ts)] base commit: $base" >> "$LOG"
+    [ -f "$GNHF_LOG" ] && mv "$GNHF_LOG" "$GNHF_LOG.prev"
     gnhf_cmd=$(printf '%q ' gnhf "${DEFAULT_FLAGS[@]}" ${flags[@]+"${flags[@]}"} "$objective")
     if tmux kill-session -t gnhf 2>/dev/null; [ -n "$(command -v tmux)" ] && tmux new-session -d -s gnhf -c "$repo" "$gnhf_cmd" 2>/dev/null; then
       tmux set-option -w -t gnhf remain-on-exit on 2>/dev/null
@@ -117,6 +146,7 @@ case "$cmd" in
       echo $! > "$PIDFILE"
       echo "[$(ts)] started gnhf pid $(cat "$PIDFILE") headless (no tmux)" >> "$LOG"
     fi
+    watch_and_notify "$(cat "$PIDFILE")" "$repo" "$base" &
     ;;
 
   status)
@@ -136,6 +166,7 @@ case "$cmd" in
     else
       echo "queued job: none"
     fi
+    echo "next ping: $(next_ping)"
     ;;
 
   clear)
