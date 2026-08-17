@@ -20,8 +20,6 @@ usage:
       ping claude, run queued job if due (launchd calls this on schedule)
   pinger.sh status
       show gnhf state and queued job
-  pinger.sh clear
-      remove queued job
   pinger.sh stop
       gracefully stop a running gnhf (SIGINT, waits up to 60s)
   pinger.sh last
@@ -35,28 +33,12 @@ gnhf_running() {
 }
 
 next_ping() {
-  h=$(date +%-H); m=$(date +%-M)
-  for slot in 0 5 10 15 20; do
-    if [ "$h" -lt "$slot" ] || { [ "$h" -eq "$slot" ] && [ "$m" -eq 0 ]; }; then
-      printf 'today %02d:00' "$slot"
-      return
-    fi
-  done
-  echo "tomorrow 00:00"
-}
-
-watch_and_notify() {
-  pid="$1" repo="$2" base="$3"
-  while kill -0 "$pid" 2>/dev/null; do sleep 30; done
-  if [ "$base" = "none" ]; then
-    msg="run ended in $(basename "$repo")"
+  slot=$(( ($(date +%-H) / 5 + 1) * 5 ))
+  if [ "$slot" -ge 24 ]; then
+    echo "tomorrow 00:00"
   else
-    n=$(git -C "$repo" rev-list --count "$base..HEAD" 2>/dev/null || echo "?")
-    msg="$n commit(s) in $(basename "$repo")"
-    [ -f "$repo/FLAWS.md" ] && msg="$msg, FLAWS.md present"
+    printf 'today %02d:00' "$slot"
   fi
-  echo "[$(ts)] gnhf finished: $msg" >> "$LOG"
-  osascript -e "display notification \"$msg\" with title \"gnhf finished\"" 2>/dev/null
 }
 
 cmd="${1:-}"
@@ -106,7 +88,10 @@ case "$cmd" in
       exit 0
     fi
 
-    notbefore=$(head -1 "$JOBFILE")
+    { read -r notbefore; read -r repo; read -r objective; } < "$JOBFILE"
+    flags=()
+    while IFS= read -r f; do flags+=("$f"); done < <(tail -n +4 "$JOBFILE")
+
     if [ "$notbefore" -gt "$(date +%s)" ]; then
       echo "[$(ts)] job not due until $(date -r "$notbefore" "+%Y-%m-%d %H:%M"), stays queued" >> "$LOG"
       exit 0
@@ -115,38 +100,35 @@ case "$cmd" in
       echo "[$(ts)] gnhf still running (pid $(cat "$PIDFILE")), job stays queued" >> "$LOG"
       exit 0
     fi
-
-    repo=""; objective=""; flags=()
-    i=0
-    while IFS= read -r line; do
-      case $i in
-        0) ;;
-        1) repo="$line" ;;
-        2) objective="$line" ;;
-        *) flags+=("$line") ;;
-      esac
-      i=$((i+1))
-    done < "$JOBFILE"
+    if ! command -v tmux >/dev/null; then
+      echo "[$(ts)] tmux not installed, job stays queued" >> "$LOG"
+      exit 1
+    fi
     rm -f "$JOBFILE"
 
     echo "[$(ts)] starting gnhf in $repo: $objective" >> "$LOG"
     cd "$repo" || { echo "[$(ts)] bad repo path: $repo" >> "$LOG"; exit 1; }
-    base=$(git rev-parse HEAD 2>/dev/null || echo none)
+    base=$(git rev-parse HEAD 2>/dev/null) \
+      || { echo "[$(ts)] not a git repo: $repo" >> "$LOG"; exit 1; }
     { echo "$repo"; echo "$base"; echo "$objective"; } > "$DIR/last-run"
     echo "[$(ts)] base commit: $base" >> "$LOG"
-    [ -f "$GNHF_LOG" ] && mv "$GNHF_LOG" "$GNHF_LOG.prev"
+
     gnhf_cmd=$(printf '%q ' gnhf "${DEFAULT_FLAGS[@]}" ${flags[@]+"${flags[@]}"} "$objective")
-    if tmux kill-session -t gnhf 2>/dev/null; [ -n "$(command -v tmux)" ] && tmux new-session -d -s gnhf -c "$repo" "$gnhf_cmd" 2>/dev/null; then
-      tmux set-option -w -t gnhf remain-on-exit on 2>/dev/null
-      tmux pipe-pane -t gnhf -o "cat >> $GNHF_LOG" 2>/dev/null
-      tmux display-message -p -t gnhf '#{pane_pid}' > "$PIDFILE"
-      echo "[$(ts)] started gnhf pid $(cat "$PIDFILE") in tmux session 'gnhf'" >> "$LOG"
-    else
-      nohup gnhf "${DEFAULT_FLAGS[@]}" ${flags[@]+"${flags[@]}"} "$objective" >> "$GNHF_LOG" 2>&1 &
-      echo $! > "$PIDFILE"
-      echo "[$(ts)] started gnhf pid $(cat "$PIDFILE") headless (no tmux)" >> "$LOG"
-    fi
-    watch_and_notify "$(cat "$PIDFILE")" "$repo" "$base" &
+    tmux kill-session -t gnhf 2>/dev/null
+    tmux new-session -d -s gnhf -c "$repo" "$gnhf_cmd; $DIR/pinger.sh notify $base"
+    tmux set-option -w -t gnhf remain-on-exit on
+    tmux pipe-pane -t gnhf -o "cat >> $GNHF_LOG"
+    tmux display-message -p -t gnhf '#{pane_pid}' > "$PIDFILE"
+    echo "[$(ts)] started gnhf pid $(cat "$PIDFILE") in tmux session 'gnhf'" >> "$LOG"
+    ;;
+
+  # chained onto the gnhf command inside tmux, runs in the target repo
+  notify)
+    n=$(git rev-list --count "$2..HEAD" 2>/dev/null || echo "?")
+    msg="$n commit(s) in $(basename "$PWD")"
+    [ -f FLAWS.md ] && msg="$msg, FLAWS.md present"
+    echo "[$(ts)] gnhf finished: $msg" >> "$LOG"
+    osascript -e "display notification \"$msg\" with title \"gnhf finished\"" 2>/dev/null
     ;;
 
   status)
@@ -169,38 +151,19 @@ case "$cmd" in
     echo "next ping: $(next_ping)"
     ;;
 
-  clear)
-    rm -f "$JOBFILE"
-    echo "queue cleared"
-    ;;
-
   last)
     [ -f "$DIR/last-run" ] || { echo "no run recorded yet"; exit 0; }
-    repo=$(sed -n 1p "$DIR/last-run")
-    base=$(sed -n 2p "$DIR/last-run")
-    objective=$(sed -n 3p "$DIR/last-run")
-    echo "repo:      $repo"
-    echo "objective: $objective"
-    echo "base:      $base"
-    echo
-    if [ "$base" = "none" ]; then
-      echo "(base unknown, showing last 10 commits)"
-      git -C "$repo" log --oneline -10
+    { read -r repo; read -r base; read -r objective; } < "$DIR/last-run"
+    printf 'repo:      %s\nobjective: %s\nbase:      %s\n\n' "$repo" "$objective" "$base"
+    if [ -n "$(git -C "$repo" log --oneline "$base..HEAD" 2>/dev/null)" ]; then
+      echo "commits made:"
+      git -C "$repo" log --oneline "$base..HEAD"
     else
-      if [ -z "$(git -C "$repo" log --oneline "$base..HEAD" 2>/dev/null)" ]; then
-        echo "no commits on current branch (worktree run); newest branches:"
-        git -C "$repo" branch --sort=-committerdate --format='  %(refname:short)  (%(committerdate:relative))' | head -5
-        echo
-        echo "inspect one: git -C $repo log --oneline $base..<branch>"
-      else
-        echo "commits made:"
-        git -C "$repo" log --oneline "$base..HEAD"
-        echo
-        echo "files changed:"
-        git -C "$repo" diff --stat "$base..HEAD" | tail -5
-      fi
+      echo "no commits on current branch (worktree run); newest branches:"
+      git -C "$repo" branch --sort=-committerdate --format='  %(refname:short)  (%(committerdate:relative))' | head -5
+      echo
+      echo "inspect one: git -C $repo log --oneline $base..<branch>"
     fi
-    [ -f "$repo/FLAWS.md" ] && { echo; echo "FLAWS.md exists: $repo/FLAWS.md"; }
     ;;
 
   stop)
@@ -211,7 +174,7 @@ case "$cmd" in
     pid=$(cat "$PIDFILE")
     kill -INT "$pid"
     echo "sent interrupt to gnhf (pid $pid), waiting for graceful exit..."
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    for _ in $(seq 12); do
       kill -0 "$pid" 2>/dev/null || { echo "gnhf stopped"; rm -f "$PIDFILE"; exit 0; }
       sleep 5
     done

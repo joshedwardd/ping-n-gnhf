@@ -15,7 +15,7 @@ mode (`claude -p "ping"`), using your existing Claude Code subscription login.
 | Piece | Where | What it does |
 |---|---|---|
 | `pinger.sh` | this folder | the brain: pings Claude, starts gnhf when a job is queued |
-| `com.josh.gnhf-pinger.plist` | `~/Library/LaunchAgents/` | the alarm clock: tells macOS when to run `pinger.sh` |
+| `com.josh.gnhf-pinger.plist` | this folder, copied to `~/Library/LaunchAgents/` | the alarm clock: tells macOS when to run `pinger.sh` |
 | `gnhf` | installed via npm (from GitHub) | the worker: loops Claude Code on a repo while you sleep |
 
 The scheduler is **launchd**, macOS's built-in replacement for cron. Same idea as
@@ -26,10 +26,12 @@ between pings; macOS wakes the script, it works for a few seconds, it exits.
 ## Turn it on (one time)
 
 ```sh
+cp com.josh.gnhf-pinger.plist ~/Library/LaunchAgents/
 launchctl load -w ~/Library/LaunchAgents/com.josh.gnhf-pinger.plist
 ```
 
-This also fires the first ping immediately. Check it worked:
+The plist hardcodes `/Users/joshedwardddd/Projects/ping-n-gnhf`; edit the paths
+if the folder lives elsewhere. Loading also fires the first ping immediately. Check it worked:
 
 ```sh
 launchctl list | grep gnhf-pinger   # should show the job
@@ -61,24 +63,23 @@ Want gnhf to work on a repo overnight? Queue a job during the day:
 
 First argument = repo path. Second = the prompt/objective. Anything after = extra
 gnhf flags. Every job also gets these defaults:
-`--current-branch --max-iterations 20 --max-tokens 5000000`
+`--worktree --max-iterations 20 --max-tokens 5000000`
 
 Check, watch, or cancel:
 
 ```sh
 ./pinger.sh status     # is gnhf running? is a job queued? when is it due?
-./pinger.sh last       # what did the last run change (commits, files, FLAWS.md)
+./pinger.sh last       # what did the last run change (commits since base)
 ./pinger.sh stop       # gracefully stop a running gnhf
-./pinger.sh clear      # cancel the queued job
+rm next-job            # cancel the queued job
 tmux attach -t gnhf    # watch gnhf's live TUI; detach with ctrl+b d
 tail -f pinger.log     # what each ping decided
 ```
 
-gnhf runs inside a detached tmux session named `gnhf`. Attach from any terminal
-to watch it live; detaching does not stop it. After it finishes, the pane stays
-open with the exit summary until the next run replaces it. If tmux is ever
-unavailable, the pinger falls back to headless background mode (output in
-`gnhf.log`).
+gnhf runs inside a detached tmux session named `gnhf`, so tmux is required.
+Attach from any terminal to watch it live; detaching does not stop it. After it
+finishes, the pane stays open with the exit summary until the next run replaces
+it.
 
 There is one job slot. Queueing again overwrites the previous job.
 
@@ -115,6 +116,6 @@ by itself. If you want silence instead, unload the agent (command above).
 ## Good habits
 
 - Check `claude -p "ping"` works in your terminal once before turning this on.
-- Review gnhf's commits each morning before pushing anything.
-- Use the `--worktree` flag on jobs if you don't want gnhf touching your
-  working copy directly.
+- Install tmux (`brew install tmux`); without it a due job stays queued.
+- Review gnhf's commits each morning before pushing anything. Jobs run with
+  `--worktree` by default, so the work lands on a branch, not your working copy.
