@@ -113,6 +113,7 @@ case "$cmd" in
     { echo "$repo"; echo "$base"; echo "$objective"; } > "$DIR/last-run"
     echo "[$(ts)] base commit: $base" >> "$LOG"
 
+    : > "$GNHF_LOG"
     gnhf_cmd=$(printf '%q ' gnhf "${DEFAULT_FLAGS[@]}" ${flags[@]+"${flags[@]}"} "$objective")
     tmux kill-session -t gnhf 2>/dev/null
     tmux new-session -d -s gnhf -c "$repo" "$gnhf_cmd; $DIR/pinger.sh notify $base"
